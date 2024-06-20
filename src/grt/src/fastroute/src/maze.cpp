@@ -31,6 +31,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 #include <algorithm>
+#include <omp.h>
 
 #include "DataType.h"
 #include "FastRoute.h"
@@ -500,14 +501,14 @@ void FastRouteCore::convertToMazeroute()
   for (const int& netID : net_ids_) {
     convertToMazerouteNet(netID);
   }
-
+#pragma omp parallel for
   for (int i = 0; i < y_grid_; i++) {
     for (int j = 0; j < x_grid_ - 1; j++) {
       // Add to keep the usage values of the last incremental routing performed
       h_edges_[i][j].usage += h_edges_[i][j].est_usage;
     }
   }
-
+#pragma omp parallel for
   for (int i = 0; i < y_grid_ - 1; i++) {
     for (int j = 0; j < x_grid_; j++) {
       // Add to keep the usage values of the last incremental routing performed
@@ -1316,6 +1317,8 @@ void FastRouteCore::mazeRouteMSMD(const int iter,
                                   const int L,
                                   float& slack_th)
 {
+  // TODO: find the time-consuming part
+  //omp_set_num_threads(8);
   // maze routing for multi-source, multi-destination
   int tmpX, tmpY;
 
@@ -1324,11 +1327,14 @@ void FastRouteCore::mazeRouteMSMD(const int iter,
   // allocate memory for distance and parent and pop_heap
   h_cost_table_.resize(max_usage_multiplier * h_capacity_);
   v_cost_table_.resize(max_usage_multiplier * v_capacity_);
-
+  // TODO:parallel
+//#pragma omp parallel for schedule(dynamic)
   for (int i = 0; i < max_usage_multiplier * h_capacity_; i++) {
     h_cost_table_[i]
         = getCost(i, logis_cof, cost_height, slope, h_capacity_, cost_type);
   }
+  // TODO:parallel
+//#pragma omp parallel for schedule(dynamic)
   for (int i = 0; i < max_usage_multiplier * v_capacity_; i++) {
     v_cost_table_[i]
         = getCost(i, logis_cof, cost_height, slope, v_capacity_, cost_type);
@@ -1355,7 +1361,8 @@ void FastRouteCore::mazeRouteMSMD(const int iter,
   multi_array<float, 2> d2(boost::extents[y_range_][x_range_]);
 
   std::vector<bool> pop_heap2(y_grid_ * x_range_, false);
-
+  
+// #pragma omp parallel for schedule(dynamic)
   for (int nidRPC = 0; nidRPC < net_ids_.size(); nidRPC++) {
     const int netID
         = ordering ? tree_order_cong_[nidRPC].treeIndex : net_ids_[nidRPC];
@@ -1720,8 +1727,8 @@ void FastRouteCore::mazeRouteMSMD(const int iter,
         // update ind1 for next loop
         ind1 = (src_heap[0] - &d1[0][0]);
 
-      }  // while loop
-
+      }  // while loop  
+//#pragma omp parallel for schedule(dynamic)
       for (int i = 0; i < dest_heap.size(); i++)
         pop_heap2[(dest_heap[i] - &d2[0][0])] = false;
 
@@ -2159,7 +2166,7 @@ void FastRouteCore::findCongestedEdgesNets(
             continue;
           }
 
-          bool vertical_edge = xreal == lastX;
+          bool vertical_edge = (xreal == lastX);
 
           if (vertical_edge == vertical) {
             // the congestion information on an edge (x1, y1) -> (x2, y2) is

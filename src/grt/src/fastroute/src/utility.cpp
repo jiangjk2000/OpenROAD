@@ -444,6 +444,8 @@ void FastRouteCore::fixEdgeAssignment(int& net_layer,
 
 void FastRouteCore::assignEdge(int netID, int edgeID, bool processDIR)
 {
+  // 变量声明和初始化
+  ///////////////////
   std::vector<std::vector<long>> gridD;
   int i, k, l, min_x, min_y, routelen, n1a, n2a, last_layer;
   int min_result, endLayer = 0;
@@ -456,11 +458,14 @@ void FastRouteCore::assignEdge(int netID, int edgeID, bool processDIR)
   const std::vector<short>& gridsX = treeedge->route.gridsX;
   const std::vector<short>& gridsY = treeedge->route.gridsY;
   std::vector<short>& gridsL = treeedge->route.gridsL;
+  ///////////////////
 
   routelen = treeedge->route.routelen;
   n1a = treeedge->n1a;
   n2a = treeedge->n2a;
 
+  // 初始化gridD与via_link
+  ///////////////////
   gridD.resize(num_layers_);
   for (int i = 0; i < num_layers_; i++) {
     gridD[i].resize(treeedge->route.routelen + 1);
@@ -474,7 +479,11 @@ void FastRouteCore::assignEdge(int netID, int edgeID, bool processDIR)
       via_link[l][k] = BIG_INT;
     }
   }
+  ///////////////////
 
+
+  // 计算layer_grid 通过计算存储每层网格的容量减去使用量找出最好的代价
+  ///////////////////
   multi_array<int, 2> layer_grid;
   layer_grid.resize(boost::extents[num_layers_][routelen + 1]);
   for (k = 0; k < routelen; k++) {
@@ -590,7 +599,9 @@ void FastRouteCore::assignEdge(int netID, int edgeID, bool processDIR)
       }
     }
   }
+  ///////////////////
 
+  // 
   if (processDIR) {
     if (treenodes[n1a].assigned) {
       for (l = treenodes[n1a].botL; l <= treenodes[n1a].topL; l++) {
@@ -813,6 +824,7 @@ void FastRouteCore::assignEdge(int netID, int edgeID, bool processDIR)
       treenodes[n1a].lID = treenodes[n1a].hID = edgeID;
     }
   }
+  // 最终更新边和网格的使用情况
   treeedge->assigned = true;
 
   for (k = 0; k < routelen; k++) {
@@ -830,7 +842,446 @@ void FastRouteCore::assignEdge(int netID, int edgeID, bool processDIR)
   }
 }
 
-void FastRouteCore::layerAssignmentV4()
+void FastRouteCore::assignDelayEdge(int netID, int edgeID, bool processDIR)
+{
+  // 变量声明和初始化
+  ///////////////////
+  std::vector<std::vector<long>> gridD;
+  int i, k, l, min_x, min_y, routelen, n1a, n2a, last_layer;
+  int min_result, endLayer = 0;
+  
+  FrNet* net = nets_[netID];
+  auto& treeedges = sttrees_[netID].edges;
+  auto& treenodes = sttrees_[netID].nodes;
+  TreeEdge* treeedge = &(treeedges[edgeID]);
+
+  const std::vector<short>& gridsX = treeedge->route.gridsX;
+  const std::vector<short>& gridsY = treeedge->route.gridsY;
+  std::vector<short>& gridsL = treeedge->route.gridsL;
+
+  std::vector<double>& cap = treeedge->route.cap;
+  std::vector<double>& res = treeedge->route.cap;
+  std::vector<double>& downstream_cap = treeedge->route.downstreamCap;
+  std::vector<double>& wire_delay = treeedge->route.wire_delay;
+  std::vector<double>& via_delay = treeedge->route.via_delay;
+
+  double avg_delay = 0;
+  for (const double &d : wire_delay) {
+    avg_delay += d / wire_delay.size();
+  }
+
+  ///////////////////
+
+  routelen = treeedge->route.routelen;
+  n1a = treeedge->n1a;
+  n2a = treeedge->n2a;
+
+  // 初始化gridD与via_link为大数 初始化via_delay
+  ///////////////////
+  gridD.resize(num_layers_);
+  for (int i = 0; i < num_layers_; i++) {
+    gridD[i].resize(treeedge->route.routelen + 1);
+  }
+
+  multi_array<int, 2> via_link;
+  via_link.resize(boost::extents[num_layers_][routelen + 1]);
+  for (l = 0; l < num_layers_; l++) {
+    for (k = 0; k <= routelen; k++) {
+      gridD[l][k] = BIG_INT;
+      via_link[l][k] = BIG_INT;
+    }
+  }
+
+  via_delay.resize(routelen, 0);
+  ///////////////////
+
+
+  // 计算layer_grid 通过计算存储每层网格的容量减去使用量找出最好的代价 // TODO: 修复代价问题 改回之前的代价越大越好
+  ///////////////////
+  multi_array<int, 2> layer_grid;
+  layer_grid.resize(boost::extents[num_layers_][routelen + 1]);
+  for (k = 0; k < routelen; k++) {
+    int best_cost = std::numeric_limits<int>::min(); // 最差delay是最大的 // fix min
+    if (gridsX[k] == gridsX[k + 1]) {
+      min_y = std::min(gridsY[k], gridsY[k + 1]);
+      for (l = net->getMinLayer(); l <= net->getMaxLayer(); l++) {
+        // check if the current layer is vertical to match the edge orientation
+        bool is_vertical
+            = layer_directions_[l] == odb::dbTechLayerDir::VERTICAL;
+        if (is_vertical) {
+          // layer_grid[l][k] = v_edges_3D_[l][min_y][gridsX[k]].cap
+          //                    - v_edges_3D_[l][min_y][gridsX[k]].usage; // 这里用cap-usage来计算的代价
+          odb::dbTechLayer* layer = db_->getTech()->findRoutingLayer(l); 
+          float layer_width = db_->getChip()->getBlock()->dbuToMicrons(layer->getWidth());
+          double cap_per_meter = 1E+6 * 1E-12 * (layer_width * layer->getCapacitance() + 2 * layer->getEdgeCapacitance());
+          double r_per_meter = 1E+6 * (layer->getResistance() / layer_width); // 存在-nan情况
+          if (std::isnan(cap_per_meter)) cap_per_meter = 0;
+          if (std::isnan(r_per_meter)) r_per_meter = 0;
+          int wl = std::abs(gridsY[k] - gridsY[k + 1]);
+          cap[k] = cap_per_meter * wl;
+          res[k] = r_per_meter * wl;
+          downstream_cap[k] = ((k == 0) ? cap[k] : (downstream_cap[k - 1] + cap[k]));
+          wire_delay[k] = res[k] * (cap[k]/2 + downstream_cap[k]);
+          // 使用delay来表示代价 x 不适配 找出critical wire，超出平均的wire对起增加代价 反映到layer_grid是？
+          double sig = (1 / (1 + std::exp(wire_delay[k]/avg_delay))) + 0.5;
+          layer_grid[l][k] = (v_edges_3D_[l][min_y][gridsX[k]].cap - v_edges_3D_[l][min_y][gridsX[k]].usage) * sig;
+          best_cost = std::max(best_cost, layer_grid[l][k]);
+        } else {
+          layer_grid[l][k] = std::numeric_limits<int>::min();
+        }
+      }
+      
+      if (best_cost
+          <= 0) {  // assigning the edge to the layer range would cause overflow
+        // try to assign the edge to the closest layer below the min routing
+        // layer
+        int min_layer = net->getMinLayer();
+        for (l = net->getMinLayer() - 1; l >= 0; l--) {
+          fixEdgeAssignment(min_layer,
+                            v_edges_3D_,
+                            gridsX[k],
+                            min_y,
+                            k,
+                            l,
+                            true,
+                            best_cost,
+                            layer_grid);
+        }
+        net->setMinLayer(min_layer);
+        // try to assign the edge to the closest layer above the max routing
+        // layer
+        int max_layer = net->getMaxLayer();
+        for (l = net->getMaxLayer() + 1; l < num_layers_; l++) {
+          fixEdgeAssignment(max_layer,
+                            v_edges_3D_,
+                            gridsX[k],
+                            min_y,
+                            k,
+                            l,
+                            true,
+                            best_cost,
+                            layer_grid);
+        }
+        net->setMaxLayer(max_layer);
+      } else {  // the edge was assigned to a layer without causing overflow
+        for (l = 0; l < num_layers_; l++) {
+          if (l < net->getMinLayer() || l > net->getMaxLayer()) {
+            layer_grid[l][k] = std::numeric_limits<int>::min();
+          }
+        }
+      }
+    } else {
+      min_x = std::min(gridsX[k], gridsX[k + 1]);
+      for (l = net->getMinLayer(); l <= net->getMaxLayer(); l++) {
+        // check if the current layer is horizontal to match the edge
+        // orientation
+        bool is_horizontal
+            = layer_directions_[l] == odb::dbTechLayerDir::HORIZONTAL;
+        if (is_horizontal) {
+          
+          // layer_grid[l][k] = wire_delay;
+          odb::dbTechLayer* layer = db_->getTech()->findRoutingLayer(l); 
+          float layer_width = db_->getChip()->getBlock()->dbuToMicrons(layer->getWidth());
+          double cap_per_meter = 1E+6 * 1E-12 * (layer_width * layer->getCapacitance() + 2 * layer->getEdgeCapacitance());
+          double r_per_meter = 1E+6 * (layer->getResistance() / layer_width); // 存在-nan情况
+          if (std::isnan(cap_per_meter)) cap_per_meter = 0;
+          if (std::isnan(r_per_meter)) r_per_meter = 0;
+          int wl = std::abs(gridsY[k] - gridsY[k + 1]);
+          cap[k] = cap_per_meter * wl;
+          res[k] = r_per_meter * wl;
+          downstream_cap[k] = ((k == 0) ? cap[k] : (downstream_cap[k - 1] + cap[k]));
+          wire_delay[k] = res[k] * (cap[k]/2 + downstream_cap[k]);
+          double sig = (1 / (1 + std::exp(wire_delay[k]/avg_delay))) + 0.5;
+          layer_grid[l][k] = (h_edges_3D_[l][gridsY[k]][min_x].cap - h_edges_3D_[l][gridsY[k]][min_x].usage) * sig;
+          best_cost = std::max(best_cost, layer_grid[l][k]);
+        } else {
+          layer_grid[l][k] = std::numeric_limits<int>::min();
+        }
+      }
+
+      if (best_cost
+          <= 0) {  // assigning the edge to the layer range would cause overflow
+        // try to assign the edge to the closest layer below the min routing
+        // layer
+        int min_layer = net->getMinLayer();
+        for (l = net->getMinLayer() - 1; l >= 0; l--) {
+          fixEdgeAssignment(min_layer,
+                            h_edges_3D_,
+                            min_x,
+                            gridsY[k],
+                            k,
+                            l,
+                            false,
+                            best_cost,
+                            layer_grid);
+        }
+        net->setMinLayer(min_layer);
+        // try to assign the edge to the closest layer above the max routing
+        // layer
+        int max_layer = net->getMaxLayer();
+        for (l = net->getMaxLayer() + 1; l < num_layers_; l++) {
+          fixEdgeAssignment(max_layer,
+                            h_edges_3D_,
+                            min_x,
+                            gridsY[k],
+                            k,
+                            l,
+                            false,
+                            best_cost,
+                            layer_grid);
+        }
+        net->setMaxLayer(max_layer);
+      } else {  // the edge was assigned to a layer without causing overflow
+        for (l = 0; l < num_layers_; l++) {
+          if (l < net->getMinLayer() || l > net->getMaxLayer()) {
+            layer_grid[l][k] = std::numeric_limits<int>::min();
+          }
+        }
+      }
+    }
+  }
+  ///////////////////
+
+  // 所有的gridD[i][k] > gridD[l][k] + xxx 的改为作为delay的计算
+  // TODO: via_delay = res * downstream_cap 如何加入via的delay代价
+  if (processDIR) {
+    if (treenodes[n1a].assigned) {
+      for (l = treenodes[n1a].botL; l <= treenodes[n1a].topL; l++) {
+        gridD[l][0] = 0;
+      }
+    } else {
+      if (verbose_)
+        // warn GRT, 200, "Start point not assigned."
+      fflush(stdout);
+    }
+
+    for (k = 0; k < routelen; k++) {
+      for (l = 0; l < num_layers_; l++) {
+        for (i = 0; i < num_layers_; i++) {
+          if (k == 0) {
+            if (gridD[i][k] > gridD[l][k] + abs(i - l) * 2) { // fix 2 
+              gridD[i][k] = gridD[l][k] + abs(i - l) * 2; // fix 2
+              via_link[i][k] = l;
+            }
+          } else {
+            if (gridD[i][k] > gridD[l][k] + abs(i - l) * 3) { // fix 3
+              gridD[i][k] = gridD[l][k] + abs(i - l) * 3; // fix 3
+              via_link[i][k] = l;
+            }
+          }
+        }
+      }
+      for (l = 0; l < num_layers_; l++) {
+        if (layer_grid[l][k] > 0) {
+          gridD[l][k + 1] = gridD[l][k] + 1;
+        } else if (layer_grid[l][k] == std::numeric_limits<int>::min()) {
+          // when the layer orientation doesn't match the edge orientation,
+          // set a larger weight to avoid assigning to this layer when the
+          // routing has 3D overflow
+          gridD[l][k + 1] = gridD[l][k] + 2 * BIG_INT;
+        } else {
+          gridD[l][k + 1] = gridD[l][k] + BIG_INT;
+        }
+      }
+    }
+
+    for (l = 0; l < num_layers_; l++) {
+      for (i = 0; i < num_layers_; i++) {
+        if (gridD[i][k] > gridD[l][k] + abs(i - l) * 1) {
+          gridD[i][k] = gridD[l][k] + abs(i - l) * 1;
+          via_link[i][k] = l;
+        }
+      }
+    }
+
+    k = routelen;
+
+    if (treenodes[n2a].assigned) {
+      min_result = BIG_INT;
+      for (i = treenodes[n2a].topL; i >= treenodes[n2a].botL; i--) {
+        if (gridD[i][routelen] < min_result || (min_result == BIG_INT)) {
+          min_result = gridD[i][routelen];
+          endLayer = i;
+        }
+      }
+    } else {
+      min_result = gridD[0][routelen];
+      endLayer = 0;
+      for (i = 0; i < num_layers_; i++) {
+        if (gridD[i][routelen] < min_result || (min_result == BIG_INT)) {
+          min_result = gridD[i][routelen];
+          endLayer = i;
+        }
+      }
+    }
+
+    if (via_link[endLayer][routelen] == BIG_INT) {
+      last_layer = endLayer;
+    } else {
+      last_layer = via_link[endLayer][routelen];
+    }
+
+    for (k = routelen; k >= 0; k--) {
+      gridsL[k] = last_layer;
+      if (via_link[last_layer][k] != BIG_INT) {
+        last_layer = via_link[last_layer][k];
+      }
+    }
+
+    if (gridsL[0] < treenodes[n1a].botL) {
+      treenodes[n1a].botL = gridsL[0];
+      treenodes[n1a].lID = edgeID;
+    }
+    if (gridsL[0] > treenodes[n1a].topL) {
+      treenodes[n1a].topL = gridsL[0];
+      treenodes[n1a].hID = edgeID;
+    }
+
+    if (treenodes[n2a].assigned) {
+      if (gridsL[routelen] < treenodes[n2a].botL) {
+        treenodes[n2a].botL = gridsL[routelen];
+        treenodes[n2a].lID = edgeID;
+      }
+      if (gridsL[routelen] > treenodes[n2a].topL) {
+        treenodes[n2a].topL = gridsL[routelen];
+        treenodes[n2a].hID = edgeID;
+      }
+
+    } else {
+      treenodes[n2a].topL = gridsL[routelen];
+      treenodes[n2a].botL = gridsL[routelen];
+      treenodes[n2a].lID = treenodes[n2a].hID = edgeID;
+    }
+
+    if (treenodes[n2a].assigned) {
+      if (gridsL[routelen] > treenodes[n2a].topL
+          || gridsL[routelen] < treenodes[n2a].botL) {
+        // error 202, "Target ending layer ({}) out of range.", gridsL[routelen]);
+      }
+    }
+
+  } else {
+    if (treenodes[n2a].assigned) {
+      for (l = treenodes[n2a].botL; l <= treenodes[n2a].topL; l++) {
+        gridD[l][routelen] = 0;
+      }
+    }
+
+    for (k = routelen; k > 0; k--) {
+      for (l = 0; l < num_layers_; l++) {
+        for (i = 0; i < num_layers_; i++) {
+          if (k == routelen) {
+            if (gridD[i][k] > gridD[l][k] + abs(i - l) * 2) { // fix 2
+              gridD[i][k] = gridD[l][k] + abs(i - l) * 2; // fix 2
+              via_link[i][k] = l;
+            }
+          } else {
+            if (gridD[i][k] > gridD[l][k] + abs(i - l) * 3) { // fix 3
+              gridD[i][k] = gridD[l][k] + abs(i - l) * 3; // fix 3
+              via_link[i][k] = l;
+            }
+          }
+        }
+      }
+      for (l = 0; l < num_layers_; l++) {
+        if (layer_grid[l][k - 1] > 0) {
+          gridD[l][k - 1] = gridD[l][k] + 1;
+        } else if (layer_grid[l][k] == std::numeric_limits<int>::min()) {
+          // when the layer orientation doesn't match the edge orientation,
+          // set a larger weight to avoid assigning to this layer when the
+          // routing has 3D overflow
+          gridD[l][k - 1] = gridD[l][k] + 2 * BIG_INT;
+        } else {
+          gridD[l][k - 1] = gridD[l][k] + BIG_INT;
+        }
+      }
+    }
+
+    for (l = 0; l < num_layers_; l++) {
+      for (i = 0; i < num_layers_; i++) {
+        if (gridD[i][0] > gridD[l][0] + abs(i - l) * 1) {
+          gridD[i][0] = gridD[l][0] + abs(i - l) * 1;
+          via_link[i][0] = l;
+        }
+      }
+    }
+
+    if (treenodes[n1a].assigned) {
+      min_result = BIG_INT;
+      for (i = treenodes[n1a].topL; i >= treenodes[n1a].botL; i--) {
+        if (gridD[i][k] < min_result || (min_result == BIG_INT)) {
+          min_result = gridD[i][0];
+          endLayer = i;
+        }
+      }
+
+    } else {
+      min_result = gridD[0][k];
+      endLayer = 0;
+      for (i = 0; i < num_layers_; i++) {
+        if (gridD[i][k] < min_result || (min_result == BIG_INT)) {
+          min_result = gridD[i][k];
+          endLayer = i;
+        }
+      }
+    }
+
+    last_layer = endLayer;
+
+    for (k = 0; k <= routelen; k++) {
+      if (via_link[last_layer][k] != BIG_INT) {
+        last_layer = via_link[last_layer][k];
+      }
+      gridsL[k] = last_layer;
+    }
+
+    gridsL[routelen] = gridsL[routelen - 1];
+
+    if (gridsL[routelen] < treenodes[n2a].botL) {
+      treenodes[n2a].botL = gridsL[routelen];
+      treenodes[n2a].lID = edgeID;
+    }
+    if (gridsL[routelen] > treenodes[n2a].topL) {
+      treenodes[n2a].topL = gridsL[routelen];
+      treenodes[n2a].hID = edgeID;
+    }
+
+    if (treenodes[n1a].assigned) {
+      if (gridsL[0] < treenodes[n1a].botL) {
+        treenodes[n1a].botL = gridsL[0];
+        treenodes[n1a].lID = edgeID;
+      }
+      if (gridsL[0] > treenodes[n1a].topL) {
+        treenodes[n1a].topL = gridsL[0];
+        treenodes[n1a].hID = edgeID;
+      }
+
+    } else {
+      // treenodes[n1a].assigned = true;
+      treenodes[n1a].topL = gridsL[0];  // std::max(endLayer, gridsL[0]);
+      treenodes[n1a].botL = gridsL[0];  // std::min(endLayer, gridsL[0]);
+      treenodes[n1a].lID = treenodes[n1a].hID = edgeID;
+    }
+  }
+  // 最终更新边和网格的使用情况
+  treeedge->assigned = true;
+
+  for (k = 0; k < routelen; k++) {
+    if (gridsX[k] == gridsX[k + 1]) {
+      min_y = std::min(gridsY[k], gridsY[k + 1]);
+
+      v_edges_3D_[gridsL[k]][min_y][gridsX[k]].usage
+          += net->getLayerEdgeCost(gridsL[k]);
+    } else {
+      min_x = std::min(gridsX[k], gridsX[k + 1]);
+
+      h_edges_3D_[gridsL[k]][gridsY[k]][min_x].usage
+          += net->getLayerEdgeCost(gridsL[k]);
+    }
+  }
+}
+
+void FastRouteCore::layerAssignmentV4(bool delayDriven)
 {
   int i, k, edgeID, nodeID, routeLen;
   int n1, n2, connectionCNT;
@@ -839,27 +1290,29 @@ void FastRouteCore::layerAssignmentV4()
   std::queue<int> edgeQueue;
 
   TreeEdge* treeedge;
-
+  // 初始化与预处理
   for (const int& netID : net_ids_) {
     auto& treeedges = sttrees_[netID].edges;
     for (edgeID = 0; edgeID < sttrees_[netID].num_edges(); edgeID++) {
       treeedge = &(treeedges[edgeID]);
-      if (treeedge->len > 0) {
+      if (treeedge->len > 0) { // 边长大于0 初始化布线长度 初始化gridL assigned flag为false
         routeLen = treeedge->route.routelen;
         treeedge->route.gridsL.resize(routeLen + 1, 0);
         treeedge->assigned = false;
       }
     }
   }
-  netpinOrderInc();
+  netpinOrderInc(); // net order 对每个线网的引脚进行排序 按照边点x坐标排序 再按照线网的平均边长度排序
 
-  for (i = 0; i < tree_order_pv_.size(); i++) {
+  for (i = 0; i < tree_order_pv_.size(); i++) { // for each 2-pin net 按排序后的顺序
     int netID = tree_order_pv_[i].treeIndex;
 
+    // 获取树节点和树边的引用
     auto& treeedges = sttrees_[netID].edges;
     auto& treenodes = sttrees_[netID].nodes;
     const int num_terminals = sttrees_[netID].num_terminals;
 
+    // 初始化边队列并将未分配的边加入队列
     for (nodeID = 0; nodeID < num_terminals; nodeID++) {
       for (k = 0; k < treenodes[nodeID].conCNT; k++) {
         edgeID = treenodes[nodeID].eID[k];
@@ -870,12 +1323,15 @@ void FastRouteCore::layerAssignmentV4()
       }
     }
 
+    // 循环处理边队列，直到队列为空
     while (!edgeQueue.empty()) {
       edgeID = edgeQueue.front();
       edgeQueue.pop();
       treeedge = &(treeedges[edgeID]);
+      // 若n1已分配则n2，若n1未分配则分配n1
       if (treenodes[treeedge->n1a].assigned) {
-        assignEdge(netID, edgeID, 1);
+        if (delayDriven) assignDelayEdge(netID, edgeID, 1);
+        else assignEdge(netID, edgeID, 1);
         treeedge->assigned = true;
         if (!treenodes[treeedge->n2a].assigned) {
           for (k = 0; k < treenodes[treeedge->n2a].conCNT; k++) {
@@ -888,7 +1344,8 @@ void FastRouteCore::layerAssignmentV4()
           treenodes[treeedge->n2a].assigned = true;
         }
       } else {
-        assignEdge(netID, edgeID, 0);
+        if (delayDriven) assignDelayEdge(netID, edgeID, 0);
+        else assignEdge(netID, edgeID, 0);
         treeedge->assigned = true;
         if (!treenodes[treeedge->n1a].assigned) {
           for (k = 0; k < treenodes[treeedge->n1a].conCNT; k++) {
@@ -903,6 +1360,7 @@ void FastRouteCore::layerAssignmentV4()
       }
     }
 
+    // 重置树节点的层和连接信息
     for (nodeID = 0; nodeID < sttrees_[netID].num_nodes(); nodeID++) {
       treenodes[nodeID].topL = -1;
       treenodes[nodeID].botL = num_layers_;
@@ -920,6 +1378,7 @@ void FastRouteCore::layerAssignmentV4()
       }
     }
 
+    // update 
     for (edgeID = 0; edgeID < sttrees_[netID].num_edges(); edgeID++) {
       treeedge = &(treeedges[edgeID]);
 
@@ -968,7 +1427,7 @@ void FastRouteCore::layerAssignmentV4()
   }
 }
 
-void FastRouteCore::layerAssignment()
+void FastRouteCore::layerAssignment(bool delayDriven)
 {
   int d, k, edgeID, numpoints, n1, n2;
   bool redundant;
@@ -1041,7 +1500,7 @@ void FastRouteCore::layerAssignment()
     }
   }
 
-  layerAssignmentV4();
+  layerAssignmentV4(delayDriven);
 
   ConvertToFull3DType2();
 }

@@ -205,6 +205,15 @@ struct Route
 
   // valid for MazeRoute: the number of edges in the route
   int routelen;
+  
+  // wire delay or via delay // length = routelen the number of edges
+  std::vector<double> wire_delay;
+  std::vector<double> via_delay;
+
+  // downstream capacitance and 
+  std::vector<double> downstreamCap;
+  std::vector<double> res;
+  std::vector<double> cap;
 
   int last_routelen = 0;  // the last routelen before overflow itter
 };

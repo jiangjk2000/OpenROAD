@@ -236,6 +236,8 @@ class FastRouteCore
   double dbuToMicrons(int dbu);
   odb::Rect globalRoutingToBox(const GSegment& route);
   NetRouteMap getRoutes();
+  void getElmoreDelay3D();
+  void getElmoreDelay();
   NetRouteMap getPlanarRoutes();
 
   // maze functions
@@ -491,8 +493,9 @@ class FastRouteCore
                          int& best_cost,
                          multi_array<int, 2>& layer_grid);
   void assignEdge(int netID, int edgeID, bool processDIR);
+  void assignDelayEdge(int netID, int edgeID, bool processDIR);
   void recoverEdge(int netID, int edgeID);
-  void layerAssignmentV4();
+  void layerAssignmentV4(bool delayDriven);
   void netpinOrderInc();
   void checkRoute3D();
   void StNetOrder();
@@ -507,7 +510,7 @@ class FastRouteCore
   void check2DEdgesUsage();
   void verify2DEdgesUsage();
   void verifyEdgeUsage();
-  void layerAssignment();
+  void layerAssignment(bool delayDriven);
   void copyBR(void);
   void copyRS(void);
   void freeRR(void);
@@ -629,6 +632,9 @@ class FastRouteCore
   std::set<std::pair<int, int>> h_used_ggrid_;
   std::set<std::pair<int, int>> v_used_ggrid_;
   std::vector<int> net_ids_;
+
+  // elmore delay net id
+  std::vector<double> net_delay;
 };
 
 }  // namespace grt

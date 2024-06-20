@@ -38,6 +38,7 @@
 
 #include <algorithm>
 #include <unordered_set>
+#include <omp.h>
 
 #include "AbstractFastRouteRenderer.h"
 #include "DataType.h"
@@ -719,6 +720,136 @@ NetRouteMap FastRouteCore::getRoutes()
   return routes;
 }
 
+// TODO: Need Test 
+void FastRouteCore::getElmoreDelay()
+{
+  std::vector<double> delay(net_ids_.size(), 0.0);
+  for (const int& netID : net_ids_) {
+    auto& treeedges = sttrees_[netID].edges;
+    const int num_edges = sttrees_[netID].num_edges();
+    std::unordered_set<GSegment, GSegmentHash> net_segs;
+    // double cap = 0;
+    // double res = 0;
+    // double wire_delay = 0;
+    // double downstream_cap = 0;
+    for (int edgeID = 0; edgeID < num_edges; edgeID++) {
+      TreeEdge* treeedge = &(treeedges[edgeID]);
+      if (treeedge->len > 0 || treeedge->route.routelen > 0) {
+        int routeLen = treeedge->route.routelen;
+        std::vector<double>& cap = treeedge->route.cap;
+        std::vector<double>& res = treeedge->route.res;
+        std::vector<double>& wire_delay = treeedge->route.wire_delay;
+        std::vector<double>& downstream_cap = treeedge->route.downstreamCap;
+        cap.resize(routeLen, 0);
+        res.resize(routeLen, 0);
+        wire_delay.resize(routeLen, 0);
+        downstream_cap.resize(routeLen, 0);
+
+        const std::vector<short>& gridsX = treeedge->route.gridsX;
+        const std::vector<short>& gridsY = treeedge->route.gridsY;
+        int lastX = tile_size_ * (gridsX[0] + 0.5) + x_corner_;
+        int lastY = tile_size_ * (gridsY[0] + 0.5) + y_corner_;
+        for (int i = 1; i <= routeLen; i++) {
+          const int xreal = tile_size_ * (gridsX[i] + 0.5) + x_corner_;
+          const int yreal = tile_size_ * (gridsY[i] + 0.5) + y_corner_;
+          int wl = std::abs(lastX - xreal) + std::abs(lastY - yreal);
+          odb::dbTechLayer* layer = db_->getTech()->findRoutingLayer(1); // 
+          float layer_width = db_->getChip()->getBlock()->dbuToMicrons(layer->getWidth());
+          double cap_per_meter = 1E+6 * 1E-12 * (layer_width * layer->getCapacitance() + 2 * layer->getEdgeCapacitance());
+          double r_per_meter = 1E+6 * (layer->getResistance() / layer_width);
+          if (std::isnan(cap_per_meter)) cap_per_meter = 0;
+          if (std::isnan(r_per_meter)) r_per_meter = 0;
+          cap[i-1] = cap_per_meter * wl;
+          res[i-1] = r_per_meter * wl;
+          wire_delay[i-1] = res[i-1] * (cap[i-1]/2 + downstream_cap[i-1]);
+          delay[netID] += wire_delay[i-1];
+          lastX = xreal;
+          lastY = yreal;
+          if (i < routeLen) downstream_cap[i] = cap[i-1] + downstream_cap[i-1];
+        }
+      }//  else if (treeedge->route.xFirst)
+    }
+  }
+  double max_delay = 0;
+  for (const auto& d : delay) {
+    max_delay += d / net_ids_.size();
+  }
+  logger_->report("\n Final 2D Routing avg Delay: {}", max_delay);
+}
+
+void FastRouteCore::getElmoreDelay3D()
+{
+  std::vector<double> delay(net_ids_.size(), 0.0);
+  for (const int& netID : net_ids_) {
+    const auto& treeedges = sttrees_[netID].edges;
+    const int num_edges = sttrees_[netID].num_edges();
+    std::unordered_set<GSegment, GSegmentHash> net_segs;
+    double cap = 0;
+    double res = 0;
+    double wire_delay = 0;
+    double via_delay = 0;
+    double downstream_cap = 0;
+    for (int edgeID = 0; edgeID < num_edges; edgeID++) {
+      const TreeEdge* treeedge = &(treeedges[edgeID]);
+      if (treeedge->len > 0 || treeedge->route.routelen > 0) {
+        int routeLen = treeedge->route.routelen;
+        const std::vector<short>& gridsX = treeedge->route.gridsX;
+        const std::vector<short>& gridsY = treeedge->route.gridsY;
+        const std::vector<short>& gridsL = treeedge->route.gridsL;
+        int lastX = tile_size_ * (gridsX[0] + 0.5) + x_corner_;
+        int lastY = tile_size_ * (gridsY[0] + 0.5) + y_corner_;
+        int lastL = gridsL[0];
+
+        for (int i = 1; i <= routeLen; i++) {
+          const int xreal = tile_size_ * (gridsX[i] + 0.5) + x_corner_;
+          const int yreal = tile_size_ * (gridsY[i] + 0.5) + y_corner_;
+          GSegment segment
+              = GSegment(lastX, lastY, lastL + 1, xreal, yreal, gridsL[i] + 1);
+          int wl = std::abs(lastX - xreal) + std::abs(lastY - yreal);
+          odb::dbTechLayer* layer = db_->getTech()->findRoutingLayer(lastL);
+          float layer_width = db_->getChip()->getBlock()->dbuToMicrons(layer->getWidth());
+          double cap_per_meter = 1E+6 * 1E-12 * (layer_width * layer->getCapacitance() + 2 * layer->getEdgeCapacitance());
+          double r_per_meter = 1E+6 * (layer->getResistance() / layer_width); // 存在-nan情况
+          if (std::isnan(cap_per_meter)) cap_per_meter = 0;
+          if (std::isnan(r_per_meter)) r_per_meter = 0;
+          cap = cap_per_meter * wl;
+          res = r_per_meter * wl;
+          wire_delay = res * (cap/2 + downstream_cap);
+          delay[netID] += wire_delay;
+          lastX = xreal;
+          lastY = yreal;
+          lastL = gridsL[i];
+          if (net_segs.find(segment) == net_segs.end()) {
+            if (segment.init_layer != segment.final_layer) {
+              GSegment invet_via = GSegment(segment.final_x,
+                                            segment.final_y,
+                                            segment.final_layer,
+                                            segment.init_x,
+                                            segment.init_y,
+                                            segment.init_layer);
+              odb::dbTechLayer* cut_layer = db_->getTech()->findRoutingLayer(std::min(segment.init_layer, segment.final_layer));
+              layer_width = db_->getChip()->getBlock()->dbuToMicrons(cut_layer->getWidth());
+              res = 1E+6 * (cut_layer->getResistance() / layer_width);
+              via_delay = res * downstream_cap;
+              delay[netID] += via_delay;
+              if (net_segs.find(invet_via) != net_segs.end()) {
+                continue;
+              }
+            }
+            net_segs.insert(segment);
+          }
+          downstream_cap += cap;
+        }
+      }
+    }
+  }
+  double max_delay = 0;
+  for (const auto& d : delay) {
+    max_delay += d / net_ids_.size();
+  }
+  logger_->report("\n Final 3D Routing avg Delay: {}", max_delay);
+}
+
 NetRouteMap FastRouteCore::getPlanarRoutes()
 {
   NetRouteMap routes;
@@ -933,6 +1064,8 @@ NetRouteMap FastRouteCore::run()
   if (netCount() == 0) {
     return getRoutes();
   }
+  
+  omp_set_num_threads(omp_get_max_threads());
 
   v_used_ggrid_.clear();
   h_used_ggrid_.clear();
@@ -956,13 +1089,15 @@ NetRouteMap FastRouteCore::run()
   net_eo_.reserve(max_degree2);
 
   int THRESH_M = 20;
-  const int ENLARGE = 15;  // 5
-  const int ESTEP1 = 10;   // 10
-  const int ESTEP2 = 5;    // 5
-  const int ESTEP3 = 5;    // 5
-  int CSTEP1 = 2;          // 5
-  const int CSTEP2 = 2;    // 3
-  const int CSTEP3 = 5;    // 15
+  // fix with sproute
+  const int ENLARGE = 115;  // 5     // 15
+  const int ESTEP1 = 30;   // 10    // 10
+  const int ESTEP2 = 30;    // 5     // 5
+  const int ESTEP3 = 30;    // 5     // 5
+  int CSTEP1 = 2;          // 5     // 2
+  const int CSTEP2 = 2;    // 3     // 2
+  const int CSTEP3 = 15;    // 15    // 5
+  // const int CSTEP4 = 1000;
   const int COSHEIGHT = 4;
   int L = 0;
   int VIA = 2;
@@ -982,17 +1117,25 @@ NetRouteMap FastRouteCore::run()
   // call FLUTE to generate RSMT and break the nets into segments (2-pin nets)
 
   via_cost_ = 0;
+  logger_->report("\n FLUTE Build Tree.");
   gen_brk_RSMT(false, false, false, false, noADJ);
+  // first L
+  logger_->report("\n 2D first L Pattern Routing.");
   routeLAll(true);
   gen_brk_RSMT(true, true, true, false, noADJ);
-
   getOverflow2D(&maxOverflow);
+  // second L
+  logger_->report("\n 2D second L Pattern Routing.");
   newrouteLAll(false, true);
   getOverflow2D(&maxOverflow);
   spiralRouteAll();
+  // first Z
+  logger_->report("\n 2D first Z Pattern Routing.");
   newrouteZAll(10);
   int past_cong = getOverflow2D(&maxOverflow);
 
+  // 
+  logger_->report("\n 2D Routing Topo convert to Maze Routing.");
   convertToMazeroute();
 
   int enlarge_ = 10;
@@ -1004,7 +1147,7 @@ NetRouteMap FastRouteCore::run()
   if (maxOverflow > 700) {
     costheight_ = 8;
     LOGIS_COF = 1.33;
-    VIA = 0;
+    VIA = 1; // fastroute 0
     THRESH_M = 0;
     CSTEP1 = 30;
   }
@@ -1019,6 +1162,8 @@ NetRouteMap FastRouteCore::run()
                "LV routing round {}, enlarge {}.",
                i,
                enlarge_);
+
+    logger_->report("\n 2D Monotonic Routing.");
     routeMonotonicAll(newTH, enlarge_, LOGIS_COF);
 
     past_cong = getOverflow2Dmaze(&maxOverflow, &tUsage);
@@ -1151,6 +1296,7 @@ NetRouteMap FastRouteCore::run()
       L = 0;
     }
 
+    logger_->report("\n 2D Maze Routing.");
     mazeRouteMSMD(i,
                   enlarge_,
                   costheight_,
@@ -1191,6 +1337,7 @@ NetRouteMap FastRouteCore::run()
         upType = 3;
         stopDEC = true;
         slope = 5;
+        logger_->report("\n 2D Maze Routing.");
         mazeRouteMSMD(i,
                       enlarge_,
                       costheight_,
@@ -1242,6 +1389,7 @@ NetRouteMap FastRouteCore::run()
         bmfl = past_cong;
 
         L = 0;
+        logger_->report("\n 2D Maze Routing.");
         mazeRouteMSMD(i,
                       enlarge_,
                       costheight_,
@@ -1342,12 +1490,20 @@ NetRouteMap FastRouteCore::run()
 
   getOverflow2Dmaze(&maxOverflow, &tUsage);
 
-  layerAssignment();
+  getElmoreDelay();
+  
+  // pin minimize layer assignment with delay driven layer assignment
+  // delay-driven layer assignment  
+  bool delayDriven = true;
+  if (delayDriven) logger_->report("\n Start Delay-Driven Layer Assignment.");
+  else logger_->report("\n Start Layer Assignment.");
+  layerAssignment(delayDriven);
 
   costheight_ = 3;
   via_cost_ = 1;
 
   if (goingLV && past_cong == 0) {
+    logger_->report("\n 3D Maze Routing.");
     mazeRouteMSMDOrder3D(enlarge_, 0, 20);
     mazeRouteMSMDOrder3D(enlarge_, 0, 12);
   }
@@ -1372,6 +1528,7 @@ NetRouteMap FastRouteCore::run()
   }
 
   NetRouteMap routes = getRoutes();
+  getElmoreDelay3D();
   net_eo_.clear();
   net_ids_.clear();
   return routes;

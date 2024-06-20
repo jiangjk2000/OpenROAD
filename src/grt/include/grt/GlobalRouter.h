@@ -46,6 +46,7 @@
 #include "GRoute.h"
 #include "RoutePt.h"
 #include "ant/AntennaChecker.hh"
+#include "db_sta/dbSta.hh"
 #include "odb/db.h"
 #include "odb/dbBlockCallBackObj.h"
 #include "sta/Liberty.hh"
@@ -192,6 +193,9 @@ class GlobalRouter : public ant::GlobalRouteSource
   void initFastRouteIncr(std::vector<Net*>& nets);
   void estimateRC();
   void estimateRC(odb::dbNet* db_net);
+  // TODO: elmore delay compute
+  // void computeElmoreDelay(sta::dbSta* sta, Net* net, sta::ParasiticAnalysisPt* analysis_point);
+
   // Return GRT layer lengths in dbu's for db_net's route indexed by routing
   // layer.
   std::vector<int> routeLayerLengths(odb::dbNet* db_net);

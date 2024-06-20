@@ -39,6 +39,8 @@ project(grt)
 
 add_subdirectory(src/fastroute)
 
+find_package(OpenMP REQUIRED)
+
 swig_lib(NAME      grt
          NAMESPACE grt
          I_FILE    src/GlobalRouter.i
@@ -88,6 +90,7 @@ target_link_libraries(grt_lib
     rsz_lib
     OpenSTA
     Boost::boost
+    OpenMP::OpenMP_CXX
 )
 
 target_link_libraries(grt
@@ -102,6 +105,7 @@ target_link_libraries(grt
     rsz
     OpenSTA
     Boost::boost
+    OpenMP::OpenMP_CXX
 )
 
 if (Python3_FOUND AND BUILD_PYTHON)
@@ -129,6 +133,7 @@ if (Python3_FOUND AND BUILD_PYTHON)
       stt
       OpenSTA
       Boost::boost
+      OpenMP::OpenMP_CXX
   )
 
 endif()
